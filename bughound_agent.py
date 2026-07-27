@@ -8,6 +8,9 @@ from reliability.risk_assessor import assess_risk
 # Directory where prompt templates live, relative to this file
 PROMPTS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts")
 
+# Severity values the agent will accept from LLM output (case-insensitive).
+_VALID_SEVERITIES = {"low", "medium", "high"}
+
 
 def _load_prompt(filename: str) -> str:
     """Load a prompt template from the prompts/ folder."""
@@ -83,11 +86,22 @@ class BugHoundAgent:
             self._log("ANALYZE", f"API Error: {str(e)}. Falling back to heuristics.")
             return self._heuristic_analyze(code_snippet)
 
-        issues = self._parse_json_array_of_issues(raw)
+        parsed = self._parse_json_array_of_issues(raw)
 
-        if issues is None:
+        if parsed is None:
             self._log("ANALYZE", "LLM output was not parseable JSON. Falling back to heuristics.")
             return self._heuristic_analyze(code_snippet)
+
+        issues = self._validate_issues(parsed)
+
+        # Parseable, non-empty, but nothing survived validation -> untrustworthy output.
+        if parsed and not issues:
+            self._log("ANALYZE", "LLM issues were all malformed. Falling back to heuristics.")
+            return self._heuristic_analyze(code_snippet)
+
+        dropped = len(parsed) - len(issues)
+        if dropped:
+            self._log("ANALYZE", f"Dropped {dropped} malformed LLM issue(s); kept {len(issues)}.")
 
         return issues
 
@@ -173,30 +187,44 @@ class BugHoundAgent:
     # ----------------------------
     # Parsing + utilities
     # ----------------------------
-    def _parse_json_array_of_issues(self, text: str) -> Optional[List[Dict[str, str]]]:
+    def _parse_json_array_of_issues(self, text: str) -> Optional[List[Any]]:
+        """Return the raw parsed JSON list (validation happens separately), or None."""
         text = text.strip()
         parsed = self._try_json_loads(text)
         if isinstance(parsed, list):
-            return self._normalize_issues(parsed)
+            return parsed
 
         array_str = self._extract_first_json_array(text)
         if array_str:
             parsed2 = self._try_json_loads(array_str)
             if isinstance(parsed2, list):
-                return self._normalize_issues(parsed2)
+                return parsed2
 
         return None
 
-    def _normalize_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
+    def _validate_issues(self, arr: List[Any]) -> List[Dict[str, str]]:
+        """
+        Strict filter: keep only well-formed issues.
+
+        An issue is well-formed iff it is a dict with a non-empty `msg` and a
+        `severity` in {Low, Medium, High} (case-insensitive). Malformed items are
+        dropped rather than coerced into placeholder issues.
+        """
         issues: List[Dict[str, str]] = []
         for item in arr:
             if not isinstance(item, dict):
                 continue
+
+            msg = str(item.get("msg", "")).strip()
+            severity = str(item.get("severity", "")).strip()
+            if not msg or severity.lower() not in _VALID_SEVERITIES:
+                continue
+
             issues.append(
                 {
                     "type": str(item.get("type", "Issue")),
-                    "severity": str(item.get("severity", "Unknown")),
-                    "msg": str(item.get("msg", "")).strip(),
+                    "severity": severity,
+                    "msg": msg,
                 }
             )
         return issues
