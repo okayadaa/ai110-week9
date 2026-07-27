@@ -36,6 +36,21 @@ def test_high_severity_issue_drives_score_down():
     assert risk["level"] in ("medium", "high")
 
 
+def test_new_import_flips_autofix_decision():
+    # A Low-severity print fix that adds `import logging` would otherwise be
+    # auto-fixable (score 95, low). The new-import signal must flip that decision.
+    original = "def f():\n    print('hi')\n"
+    fixed = "import logging\n\ndef f():\n    logging.info('hi')\n"
+    risk = assess_risk(
+        original_code=original,
+        fixed_code=fixed,
+        issues=[{"type": "Code Quality", "severity": "Low", "msg": "print"}],
+    )
+    assert risk["should_autofix"] is False
+    assert risk["level"] == "medium"
+    assert any("import" in r.lower() for r in risk["reasons"])
+
+
 def test_missing_return_is_penalized():
     original = "def f(x):\n    return x + 1\n"
     fixed = "def f(x):\n    x + 1\n"

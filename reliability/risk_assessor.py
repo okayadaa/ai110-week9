@@ -1,4 +1,13 @@
-from typing import Dict, List
+from typing import Dict, List, Set
+
+
+def _import_lines(code: str) -> Set[str]:
+    """Return the set of stripped import statement lines in the given code."""
+    return {
+        line.strip()
+        for line in code.splitlines()
+        if line.strip().startswith(("import ", "from "))
+    }
 
 
 def assess_risk(
@@ -61,6 +70,12 @@ def assess_risk(
         # This is usually good, but still risky.
         score -= 5
         reasons.append("Bare except was modified, verify correctness.")
+
+    if _import_lines(fixed_code) - _import_lines(original_code):
+        # A minimal, behavior-preserving fix rarely needs new imports.
+        # New dependencies expand surface area, so lean toward human review.
+        score -= 25
+        reasons.append("Fix introduces new import(s); new dependencies warrant review.")
 
     # ----------------------------
     # Clamp score
